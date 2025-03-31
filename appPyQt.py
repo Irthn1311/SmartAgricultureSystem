@@ -354,16 +354,18 @@ class WeatherApp(QMainWindow):
 
         # Chuyển đổi thứ sang tiếng Việt
         day_map = {
-            1: "Thứ hai",
-            2: "Thứ ba",
-            3: "Thứ tư",
-            4: "Thứ năm",
-            5: "Thứ sáu",
-            6: "Thứ bảy",
-            7: "Chủ nhật"
+            1: "Thứ Hai",
+            2: "Thứ Ba", 
+            3: "Thứ Tư",
+            4: "Thứ Năm",
+            5: "Thứ Sáu", 
+            6: "Thứ Bảy",
+            0: "Chủ Nhật"  # Thay đổi key 7 thành 0
         }
-        weekday = day_map[current.date().dayOfWeek()]
-        date_str = current.toString(f"{weekday}, dd-MM-yyyy")
+        
+        # Sử dụng phương thức dayOfWeek() và lấy số dư khi chia cho 7
+        weekday = current.date().dayOfWeek() % 7
+        date_str = f"{day_map[weekday]}, {current.toString('dd-MM-yyyy')}"
         self.date_label.setText(date_str)
 
 if __name__ == '__main__':
