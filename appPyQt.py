@@ -4,11 +4,12 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 import re
 import json
+import requests
 
 class WeatherApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.icon_path = r"C:\Users\Admin\Downloads\SenseFarm\weather\weather.ico"
+        self.icon_path = "weather.ico"
         self.setWindowIcon(QIcon(self.icon_path))
         self.users_db = {}
         self.load_users()
@@ -178,9 +179,39 @@ class WeatherApp(QMainWindow):
         # Header
         header_widget = QWidget()
         header_layout = QHBoxLayout(header_widget)
-        header_label = QLabel("Hệ thống quản lý nông nghiệp")
-        header_label.setStyleSheet("font-size: 20px; font-weight: bold;")
-        header_layout.addWidget(header_label)
+
+        # User Info Widget
+        user_info_widget = QWidget()
+        user_info_layout = QHBoxLayout(user_info_widget)
+
+        # User Image
+        self.user_image_label = QLabel()
+        self.user_image_label.setScaledContents(True)
+        self.user_image_label.setFixedSize(50, 50)
+        self.user_image_label.mousePressEvent = lambda event: self.uploadImage(username)
+        if "image" in self.users_db[username]:
+            user_image = QPixmap(self.users_db[username]["image"])
+            self.user_image_label.setPixmap(user_image)
+        else:
+            self.user_image_label.setText("Chọn ảnh")
+            self.user_image_label.setStyleSheet("border: 1px dashed #ccc; padding: 10px;")
+
+        # Tạo mặt nạ hình tròn
+        mask = QRegion(0, 0, 50, 50, QRegion.Ellipse)
+        self.user_image_label.setMask(mask)
+
+        user_info_layout.addWidget(self.user_image_label)
+
+        # Username Label
+        username_label = QLabel(username)
+        username_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        user_info_layout.addWidget(username_label)
+
+        header_layout.addWidget(user_info_widget)
+        #Logout Button
+        logout_btn = QPushButton("Đăng xuất")
+        logout_btn.clicked.connect(self.logout)
+        header_layout.addWidget(logout_btn, alignment=Qt.AlignRight)
 
         # Widget thời gian
         time_widget = QWidget()
@@ -217,14 +248,14 @@ class WeatherApp(QMainWindow):
         status_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         status_layout = QHBoxLayout(status_widget)
 
-        weather_icon = QLabel("☀️")
-        weather_text = QLabel("Nắng")
+        self.weather_icon = QLabel("☀️")
+        self.weather_text = QLabel("Nắng")
 
-        weather_icon.setStyleSheet("font-size: 48px;")
-        weather_text.setStyleSheet("font-size: 24px; font-weight: bold; color: #333;")
+        self.weather_icon.setStyleSheet("font-size: 48px;")
+        self.weather_text.setStyleSheet("font-size: 24px; font-weight: bold; color: #333;")
 
-        status_layout.addWidget(weather_icon, alignment=Qt.AlignCenter)
-        status_layout.addWidget(weather_text, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.weather_icon, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.weather_text, alignment=Qt.AlignCenter)
 
         # Thông số thời tiết
         params_widget = QWidget()
@@ -232,7 +263,7 @@ class WeatherApp(QMainWindow):
         params_grid = QGridLayout(params_widget)
         params_grid.setSpacing(15)
 
-        params = [
+        self.params = [
             ("🌡", "Nhiệt độ:", "**", "°C"),
             ("💨", "Sức gió:", "**", "km/h"),
             ("💧", "Độ ẩm:", "**", "%"),
@@ -245,7 +276,7 @@ class WeatherApp(QMainWindow):
         vline.setFrameShadow(QFrame.Sunken)
         vline.setStyleSheet("background-color: #ccc;")
 
-        for i, (icon, label, value, unit) in enumerate(params):
+        for i, (icon, label, value, unit) in enumerate(self.params):
             param_widget = QWidget()
             param_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             param_layout = QHBoxLayout(param_widget)
@@ -348,10 +379,28 @@ class WeatherApp(QMainWindow):
         self.button_group.buttons()[0].setChecked(True)
         self.updateDateTime()
 
+        # Kết nối sự kiện click vào nút thời tiết
+        self.button_group.buttons()[1].clicked.connect(self.showWeatherDetails)
+
+    def uploadImage(self, username):
+        file_dialog = QFileDialog()
+        file_path, _ = file_dialog.getOpenFileName(self, "Chọn ảnh", "", "Image Files (*.png *.jpg *.jpeg)")
+
+        if file_path:
+            self.users_db[username]["image"] = file_path
+            self.save_users()
+            user_image = QPixmap(file_path)
+            self.user_image_label.setPixmap(user_image)
+
+            # Cập nhật mặt nạ hình tròn sau khi tải ảnh mới
+            mask = QRegion(0, 0, 50, 50, QRegion.Ellipse)
+            self.user_image_label.setMask(mask)
+
     def updateDateTime(self):
         current = QDateTime.currentDateTime()
         self.time_label.setText(current.toString("HH:mm"))
 
+      
         # Chuyển đổi thứ sang tiếng Việt
         day_map = {
             1: "Thứ Hai",
@@ -360,13 +409,75 @@ class WeatherApp(QMainWindow):
             4: "Thứ Năm",
             5: "Thứ Sáu", 
             6: "Thứ Bảy",
-            0: "Chủ Nhật"
+            0: "Chủ Nhật"  # Thay đổi key 7 thành 0
         }
         
         # Sử dụng phương thức dayOfWeek() và lấy số dư khi chia cho 7
         weekday = current.date().dayOfWeek() % 7
         date_str = f"{day_map[weekday]}, {current.toString('dd-MM-yyyy')}"
         self.date_label.setText(date_str)
+
+    def showWeatherDetails(self):
+        self.fetchWeatherData()
+        # ... (các phần code khác)
+
+    def fetchWeatherData(self):
+        api_key = "40a9e27759c4"  # Thay thế bằng API Key của bạn
+        city = "Ho Chi Minh City"
+        weather_data = self.get_weather_data(api_key, city)
+
+        if weather_data:
+            temperature = weather_data["main"]["temp"]
+            humidity = weather_data["main"]["humidity"]
+            wind_speed = weather_data["wind"]["speed"]
+            description = weather_data["weather"][0]["description"]
+
+            # Cập nhật giao diện người dùng với dữ liệu thời tiết
+            self.params[0] = ("", "Nhiệt độ:", temperature, "°C")
+            self.params[1] = ("", "Sức gió:", wind_speed, "km/h")
+            self.params[2] = ("", "Độ ẩm:", humidity, "%")
+            self.params[3] = ("", "Kết tủa:", "**", "%")  # API không cung cấp kết tủa
+
+            self.weather_text.setText(description)
+            if "nắng" in description:
+                self.weather_icon.setText("☀️")
+            elif "mưa" in description:
+                self.weather_icon.setText("️")
+            elif "mây" in description:
+                self.weather_icon.setText("☁️")
+            else:
+                self.weather_icon.setText("")  # Default icon
+
+            # Cập nhật giao diện người dùng
+            params_grid = self.findChild(QGridLayout)
+            for i, (icon, label, value, unit) in enumerate(self.params):
+                param_widget = params_grid.itemAtPosition(i // 2, (i % 2) * 2).widget()
+                right = param_widget.layout().itemAt(2).widget()
+                right.setText(f"{value}{unit}")
+        else:
+            QMessageBox.warning(self, "Lỗi", "Không thể lấy dữ liệu thời tiết.")
+
+    def get_weather_data(self, api_key, city):
+        base_url = "http://api.openweathermap.org/data/2.5/weather"
+        params = {
+            "q": city,
+            "appid": api_key,
+            "units": "metric",  # Lấy nhiệt độ theo độ Celsius
+            "lang": "vi"  # Lấy thông tin thời tiết bằng tiếng Việt
+        }
+
+        try:
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()  # Kiểm tra lỗi HTTP
+
+            data = response.json()
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"Lỗi khi lấy dữ liệu thời tiết: {e}")
+            return None
+
+    def logout(self):
+        self.showLoginPage()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
