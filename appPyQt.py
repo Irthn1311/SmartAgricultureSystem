@@ -360,7 +360,7 @@ class WeatherApp(QMainWindow):
             4: "Thứ Năm",
             5: "Thứ Sáu", 
             6: "Thứ Bảy",
-            0: "Chủ Nhật"  # Thay đổi key 7 thành 0
+            0: "Chủ Nhật"
         }
         
         # Sử dụng phương thức dayOfWeek() và lấy số dư khi chia cho 7
