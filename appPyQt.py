@@ -2163,6 +2163,68 @@ class WeatherApp(QMainWindow):
         self.current_user = None  # Reset current_user khi logout
         self.showLoginPage()
 
+    def showWeatherDetails(self):
+        self.fetchWeatherData()
+        # ... (các phần code khác)
+
+    def fetchWeatherData(self):
+        api_key = "40a9e27759c4"  # Thay thế bằng API Key của bạn
+        city = "Ho Chi Minh City"
+        weather_data = self.get_weather_data(api_key, city)
+
+        if weather_data:
+            temperature = weather_data["main"]["temp"]
+            humidity = weather_data["main"]["humidity"]
+            wind_speed = weather_data["wind"]["speed"]
+            description = weather_data["weather"][0]["description"]
+
+            # Cập nhật giao diện người dùng với dữ liệu thời tiết
+            self.params[0] = ("", "Nhiệt độ:", temperature, "°C")
+            self.params[1] = ("", "Sức gió:", wind_speed, "km/h")
+            self.params[2] = ("", "Độ ẩm:", humidity, "%")
+            self.params[3] = ("", "Kết tủa:", "**", "%")  # API không cung cấp kết tủa
+
+            self.weather_text.setText(description)
+            if "nắng" in description:
+                self.weather_icon.setText("☀️")
+            elif "mưa" in description:
+                self.weather_icon.setText("️")
+            elif "mây" in description:
+                self.weather_icon.setText("☁️")
+            else:
+                self.weather_icon.setText("")  # Default icon
+
+            # Cập nhật giao diện người dùng
+            params_grid = self.findChild(QGridLayout)
+            for i, (icon, label, value, unit) in enumerate(self.params):
+                param_widget = params_grid.itemAtPosition(i // 2, (i % 2) * 2).widget()
+                right = param_widget.layout().itemAt(2).widget()
+                right.setText(f"{value}{unit}")
+        else:
+            QMessageBox.warning(self, "Lỗi", "Không thể lấy dữ liệu thời tiết.")
+
+    def get_weather_data(self, api_key, city):
+        base_url = "http://api.openweathermap.org/data/2.5/weather"
+        params = {
+            "q": city,
+            "appid": api_key,
+            "units": "metric",  # Lấy nhiệt độ theo độ Celsius
+            "lang": "vi"  # Lấy thông tin thời tiết bằng tiếng Việt
+        }
+
+        try:
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()  # Kiểm tra lỗi HTTP
+
+            data = response.json()
+            return data
+        except requests.exceptions.RequestException as e:
+            print(f"Lỗi khi lấy dữ liệu thời tiết: {e}")
+            return None
+
+    def logout(self):
+        self.showLoginPage()
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
 
