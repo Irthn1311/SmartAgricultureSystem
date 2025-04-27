@@ -5,18 +5,33 @@ import pandas as pd
 import numpy as np
 from tensorflow.keras.models import load_model
 import joblib
+import psycopg2
+import subprocess
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QLineEdit, QMessageBox, QFrame, QSizePolicy, 
     QButtonGroup, QGridLayout, QGroupBox, QFormLayout, QSpinBox, 
-    QTimeEdit, QComboBox, QScrollArea, QCheckBox, QFileDialog, QDialog
+    QTimeEdit, QComboBox, QScrollArea, QCheckBox, QFileDialog, QDialog,
+    QRadioButton
 )
-from PyQt5.QtCore import Qt, QTimer, QDateTime, QLocale
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QLocale, QTime
 from PyQt5.QtGui import QIcon, QPixmap, QRegion
+import json
+
+# Cấu hình kết nối database
+DB_CONFIG = {
+    'dbname': 'smart_agriculture',
+    'user': 'postgres',
+    'password': '12345678',
+    'host': 'localhost',
+    'port': '5432'
+}
 
 class WeatherApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.serial_process = None
+        self.start_serial_reader()
         # Khởi tạo database người dùng
         self.users_db = {
             "user1": {"password": "1111", "email": "user1@example.com"},
@@ -32,7 +47,16 @@ class WeatherApp(QMainWindow):
             "vi": "Tiếng Việt",
             "en": "English",
             "auto": "Tự động theo hệ thống"
-        }# Mặc định là tiếng Việt
+        }
+        
+        # Khởi tạo model và scaler
+        try:
+            self.model = load_model("weather_model.keras", compile=False)
+            self.scaler = joblib.load("scaler.save")
+        except Exception as e:
+            print(f"Lỗi khi khởi tạo model và scaler: {e}")
+            self.model = None
+            self.scaler = None
         self.translations = {
             "vi": {
                 "app_title": "Hệ thống Nông nghiệp Thông minh",
@@ -56,6 +80,29 @@ class WeatherApp(QMainWindow):
                 "temperature": "Nhiệt độ",
                 "humidity": "Độ ẩm",
                 "cloud": "Mây",
+                "precipitation": "Kết tủa",
+                "wind_speed": "Sức gió",
+                "language": "Ngôn ngữ",
+                "interface": "Giao diện",
+                "performance": "Hiệu suất",
+                "help": "Trợ giúp",
+                "notifications": "Thông báo",
+                "personal_info": "Thông tin cá nhân",
+                "pin":"Chân cắm",
+                "version": "Phiên bản 1.0.0",
+                "save": "Lưu thay đổi",
+                "cancel": "Hủy",
+                "error": "Lỗi",
+                "success": "Thành công",
+                "current_password": "Mật khẩu hiện tại",
+                "new_password": "Mật khẩu mới",
+                "confirm_password": "Xác nhận mật khẩu mới",
+                "email": "Email",
+                "invalid_email": "Email không hợp lệ",
+                "password_mismatch": "Mật khẩu mới không khớp",
+                "password_length": "Mật khẩu mới phải có ít nhất 4 ký tự",
+                "wrong_password": "Mật khẩu hiện tại không đúng",
+                "update_success": "Đã cập nhật thông tin tài khoản",
                 "rain_prob": "Xác suất mưa",
                 "loading": "Đang tải",
                 "updating_weather": "Đang cập nhật thông tin thời tiết...",
@@ -94,7 +141,12 @@ class WeatherApp(QMainWindow):
                 "watering_duration": "Thời gian tưới:",
                 "back_btn": "Quay lại",
                 "activate_btn": "Kích hoạt",
-                "deactivate_btn": "Vô hiệu hóa"
+                "deactivate_btn": "Vô hiệu hóa",
+                "invalid_credentials": "Tên đăng nhập hoặc mật khẩu không đúng!",
+                "login_success": "Đăng nhập thành công!",
+                "select_language": "Chọn ngôn ngữ",
+                "language_changed": "Đã thay đổi ngôn ngữ thành",
+                "please_fill_all": "Vui lòng điền đầy đủ thông tin!",
             },
             "en": {
                 "app_title": "Smart Agriculture System",
@@ -116,6 +168,17 @@ class WeatherApp(QMainWindow):
                 "saturday": "Saturday",
                 "sunday": "Sunday",
                 "temperature": "Temperature",
+                "select_language": "Select Language",
+                "language":"Language",
+                "interface": "Interface",
+                "help":"Help",
+                "personal_info": "Personal Information",
+                "notifications": "Notifications",
+                "temperature": "Temperature",
+                "wind_speed": "Wind Speed",
+                "humidity": "Humidity",
+                "precipitation": "Precipitation",
+                "select_language": "Select Language",
                 "humidity": "Humidity",
                 "cloud": "Cloud",
                 "rain_prob": "Rain Probability",
@@ -125,7 +188,7 @@ class WeatherApp(QMainWindow):
                 "error": "Error",
                 "yesterday": "Yesterday",
                 "today": "Today",
-                "next_day": "day ahead",
+                "next_day": "Next day",
                 "sunny": "Sunny",
                 "rainy": "Rainy",
                 "watering_options": "Watering Options",
@@ -156,14 +219,104 @@ class WeatherApp(QMainWindow):
                 "watering_duration": "Watering Duration:",
                 "back_btn": "Back",
                 "activate_btn": "Activate",
-                "deactivate_btn": "Deactivate"
+                "deactivate_btn": "Deactivate",
+                "pin":"Pin",
+                "version": "Version 1.0.0",
+                "please_fill_all": "Please fill in all fields!",
+                "invalid_credentials": "Invalid username or password!",
+                "login_success": "Login successful!",   
+                "language_changed": "Language changed to",
             }
         }
         # Khởi tạo trạng thái tưới nước
         self.manual_watering_on = False
         self.auto_watering_on = False
         self.auto_watering_settings = None
+        self.db_connection = None  # Biến lưu kết nối database
+        self.db_cursor = None  # Biến lưu cursor database
         self.initUI()
+        self.connect_to_database()  # Kết nối database khi khởi tạo
+
+    def connect_to_database(self):
+        """Kết nối đến database PostgreSQL"""
+        try:
+            self.db_connection = psycopg2.connect(**DB_CONFIG)
+            self.db_cursor = self.db_connection.cursor()
+            print("Kết nối database thành công!")
+        except Exception as e:
+            print(f"Lỗi kết nối database: {str(e)}")
+            QMessageBox.critical(self, "Lỗi", "Không thể kết nối đến database!")
+
+    def get_latest_sensor_data(self):
+        """Lấy dữ liệu cảm biến mới nhất từ database"""
+        try:
+            if not self.db_connection or self.db_connection.closed:
+                self.connect_to_database()
+            
+            query = "SELECT temp, hum, lux, led_status, timestamp FROM sensor_data ORDER BY timestamp DESC LIMIT 1"
+            self.db_cursor.execute(query)
+            latest_data = self.db_cursor.fetchone()
+            
+            if latest_data:
+                return {
+                    'temperature': latest_data[0],
+                    'humidity': latest_data[1],
+                    'light': latest_data[2],
+                    'led_status': latest_data[3],
+                    'timestamp': latest_data[4]
+                }
+            return None
+        except Exception as e:
+            print(f"Lỗi khi lấy dữ liệu từ database: {str(e)}")
+            return None
+
+    def update_weather_params(self):
+        try:
+            latest_data = self.get_latest_sensor_data()
+            # Kiểm tra xem các label có tồn tại và chưa bị xóa không
+            if latest_data and hasattr(self, 'temp_label') and self.temp_label and not self.temp_label.isHidden():
+                self.temp_label.setText(f"{latest_data['temperature']:.1f}°C")
+                self.hum_label.setText(f"{latest_data['humidity']:.1f}%")
+                # Nếu muốn hiển thị ánh sáng (lux) thay cho sức gió:
+                if hasattr(self, 'wind_label') and self.wind_label and not self.wind_label.isHidden():
+                    self.wind_label.setText(f"{latest_data['light']:.1f} lux")
+                # Nếu muốn hiển thị trạng thái đèn thay cho kết tủa:
+                if hasattr(self, 'precip_label') and self.precip_label and not self.precip_label.isHidden():
+                    self.precip_label.setText(str(latest_data['led_status']))
+        except Exception as e:
+            print(f"Lỗi khi cập nhật thông số thời tiết: {str(e)}")
+
+    def update_weather_ui(self):
+        """Cập nhật giao diện hiển thị thông số thời tiết"""
+        try:
+            if hasattr(self, 'params_widget'):
+                # Xóa các widget cũ
+                for i in reversed(range(self.params_widget.layout().count())):
+                    self.params_widget.layout().itemAt(i).widget().setParent(None)
+                
+                # Tạo lại các widget với dữ liệu mới
+                for i, (icon, label, value, unit) in enumerate(self.params):
+                    param_widget = QWidget()
+                    param_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                    param_layout = QHBoxLayout(param_widget)
+
+                    # Left side (icon + label)
+                    left = QLabel(f"{icon} {label}")
+                    left.setStyleSheet("font-size: 14px; color: #333;")
+
+                    # Right side (value + unit)
+                    right = QLabel(f"{value}{unit}")
+                    right.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
+
+                    param_layout.addWidget(left)
+                    param_layout.addStretch()
+                    param_layout.addWidget(right)
+
+                    row = i // 2
+                    col = i % 2
+                    self.params_widget.layout().addWidget(param_widget, row, col)
+        except Exception as e:
+            print(f"Lỗi khi cập nhật giao diện thời tiết: {str(e)}")
 
     def initUI(self):
         self.setWindowTitle(self.get_translated_text('app_title'))
@@ -191,6 +344,16 @@ class WeatherApp(QMainWindow):
 
         self.current_page = None
         self.showLoginPage()
+
+        # Tạo timer để cập nhật dữ liệu thời tiết từ database
+        self.weather_timer = QTimer(self)
+        self.weather_timer.timeout.connect(self.update_weather_params)
+        if hasattr(self, 'weather_timer'):
+            self.weather_timer.start(5000)
+
+        self.weather_predict_timer = QTimer(self)
+        self.weather_predict_timer.timeout.connect(self.update_weather_prediction)
+        self.weather_predict_timer.start(2000)
 
     def showLoginForm(self):
         self.showMainPage()
@@ -504,9 +667,10 @@ class WeatherApp(QMainWindow):
             self.current_page.deleteLater()
             
         # Dừng timer cũ nếu có
-        if self.timer:
-            self.timer.stop()
-            self.timer.deleteLater()
+        if hasattr(self, 'weather_timer') and self.weather_timer.isActive():
+            self.weather_timer.stop()
+        if hasattr(self, 'weather_timer'):
+            self.weather_timer.timeout.disconnect()
 
         dashboard = QWidget()
         main_layout = QVBoxLayout(dashboard)
@@ -611,17 +775,20 @@ class WeatherApp(QMainWindow):
         status_layout.addWidget(self.weather_text, alignment=Qt.AlignCenter)
 
         # Thông số thời tiết
-        params_widget = QWidget()
-        params_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        params_grid = QGridLayout(params_widget)
+        self.params_widget = QWidget()
+        self.params_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        params_grid = QGridLayout(self.params_widget)
         params_grid.setSpacing(15)
 
-        self.params = [
-            ("🌡", self.get_translated_text('temperature'), "**", "°C"),
-            ("💨", self.get_translated_text('wind_speed'), "**", "km/h"),
-            ("💧", self.get_translated_text('humidity'), "**", "%"),
-            ("🏗", self.get_translated_text('precipitation'), "**", "%")
-        ]
+        # Tạo các label giá trị thành thuộc tính để cập nhật động
+        self.temp_label = QLabel("**°C")
+        self.temp_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
+        self.wind_label = QLabel("**km/h")
+        self.wind_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
+        self.hum_label = QLabel("**%")
+        self.hum_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
+        self.precip_label = QLabel("**%")
+        self.precip_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
 
         # Tạo line dọc
         vline = QFrame()
@@ -629,32 +796,31 @@ class WeatherApp(QMainWindow):
         vline.setFrameShadow(QFrame.Sunken)
         vline.setStyleSheet("background-color: #ccc;")
 
-        for i, (icon, label, value, unit) in enumerate(self.params):
+        # Tạo các dòng thông số
+        # 0: nhiệt độ, 1: sức gió, 2: độ ẩm, 3: kết tủa
+        param_labels = [
+            ("🌡", self.get_translated_text('temperature'), self.temp_label),
+            ("💨", self.get_translated_text('wind_speed'), self.wind_label),
+            ("💧", self.get_translated_text('humidity'), self.hum_label),
+            ("🏗", self.get_translated_text('precipitation'), self.precip_label)
+        ]
+        for i, (icon, label, value_label) in enumerate(param_labels):
             param_widget = QWidget()
             param_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             param_layout = QHBoxLayout(param_widget)
-
-            # Left side (icon + label)
             left = QLabel(f"{icon} {label}")
             left.setStyleSheet("font-size: 14px; color: #333;")
-
-            # Right side (value + unit)
-            right = QLabel(f"{value}{unit}")
-            right.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
-
             param_layout.addWidget(left)
             param_layout.addStretch()
-            param_layout.addWidget(right)
-
+            param_layout.addWidget(value_label)
             row = i // 2
             col = i % 2
-
             if col == 1:
                 params_grid.addWidget(vline, row, 1)
             params_grid.addWidget(param_widget, row, col * 2 + (1 if col == 1 else 0))
 
         weather_layout.addWidget(status_widget)
-        weather_layout.addWidget(params_widget)
+        weather_layout.addWidget(self.params_widget)
 
         weather_widget.setStyleSheet("""
             QWidget {
@@ -737,6 +903,12 @@ class WeatherApp(QMainWindow):
         self.button_group.buttons()[2].clicked.connect(self.showWateringOptions)
         self.button_group.buttons()[3].clicked.connect(lambda: self.showSettingsPage(username))
 
+        # Sau khi tạo xong các label:
+        if not hasattr(self, 'weather_timer'):
+            self.weather_timer = QTimer(self)
+        self.weather_timer.timeout.connect(self.update_weather_params)
+        self.weather_timer.start(2000)  # cập nhật mỗi 2 giây
+
     def updateDateTime(self):
         try:
             if hasattr(self, 'time_label') and self.time_label and not self.time_label.isHidden():
@@ -786,11 +958,97 @@ class WeatherApp(QMainWindow):
             mask = QRegion(0, 0, 50, 50, QRegion.Ellipse)
             self.user_image_label.setMask(mask)
 
+    def get_weather_data_from_db(self):
+        """Lấy dữ liệu thời tiết từ database và chuyển đổi thành định dạng phù hợp"""
+        try:
+            if not self.db_connection or self.db_connection.closed:
+                self.connect_to_database()
+            
+            # Lấy dữ liệu trong 24 giờ qua
+            query = """
+            SELECT temp, hum, lux, timestamp 
+            FROM sensor_data 
+            WHERE timestamp >= NOW() - INTERVAL '24 hours'
+            ORDER BY timestamp DESC
+            """
+            self.db_cursor.execute(query)
+            data = self.db_cursor.fetchall()
+            
+            if not data:
+                return None
+                
+            # Chuyển đổi dữ liệu thành DataFrame
+            df_data = []
+            for row in data:
+                temp, hum, lux, timestamp = row
+                df_data.append({
+                    'temp': float(temp) if temp is not None else 0,
+                    'humidity': float(hum) if hum is not None else 0,
+                    'cloud': float(lux) / 10 if lux is not None else 0
+                })
+            
+            return pd.DataFrame(df_data)
+            
+        except Exception as e:
+            print(f"Lỗi khi lấy dữ liệu từ database: {str(e)}")
+            return None
+
+    def preprocess_data(self, df):
+        """Xử lý dữ liệu để phù hợp với model"""
+        try:
+            if df is None or df.empty:
+                return None
+                
+            # Tính toán MinTemp và MaxTemp từ dữ liệu trong 24 giờ
+            min_temp = df['temp'].min()
+            max_temp = df['temp'].max()
+            current_temp = df['temp'].iloc[0]  # Lấy nhiệt độ hiện tại
+            
+            # Tạo DataFrame mới với các cột cần thiết
+            processed_df = pd.DataFrame([{
+                'MinTemp': min_temp,
+                'MaxTemp': max_temp,
+                'Humidity': df['humidity'].iloc[0],
+                'Cloud': df['cloud'].iloc[0],
+                'Temp': current_temp
+            }])
+            
+            return processed_df
+            
+        except Exception as e:
+            print(f"Lỗi khi xử lý dữ liệu: {str(e)}")
+            return None
+
+    def get_weather_data_24h_ago(self):
+        """Lấy dữ liệu thời tiết từ 24 giờ trước"""
+        try:
+            cursor = self.db_connection.cursor()
+            query = """
+                SELECT timestamp, temp, hum, lux FROM sensor_data 
+                WHERE timestamp >= NOW() - INTERVAL '24 hours' 
+                AND timestamp < NOW() - INTERVAL '23 hours'
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """
+            cursor.execute(query)
+            result = cursor.fetchone()
+            cursor.close()
+            
+            if result:
+                return {
+                    'temp': float(result[1]) if result[1] is not None else 0,  # temp
+                    'humidity': float(result[2]) if result[2] is not None else 0,  # hum
+                    'cloud': float(result[3]) / 10 if result[3] is not None else 0  # lux -> cloud (lux/10)
+                }
+            return None
+        except Exception as e:
+            print(f"Lỗi khi lấy dữ liệu 24h trước: {str(e)}")
+            return None
+
     def showWeatherDetails(self):
         try:
             # Kiểm tra sự tồn tại của các file cần thiết
             required_files = {
-                "Weather_Data.csv": "File dữ liệu thời tiết",
                 "scaler.save": "File scaler đã train",
                 "weather_model.keras": "File model dự đoán thời tiết"
             }
@@ -806,48 +1064,23 @@ class WeatherApp(QMainWindow):
                 QMessageBox.critical(self, self.get_translated_text('error'), error_msg)
                 return
             
-            # Load và tiền xử lý dữ liệu
-            df = pd.read_csv("Weather_Data.csv")
-            features = self.preprocess_data(df)
+            # Lấy dữ liệu hôm qua (24h trước)
+            yesterday_data = self.get_weather_data_24h_ago()
             
-            # Load model và scaler
-            scaler = joblib.load("scaler.save")
-            model = load_model("weather_model.keras")
+            # Lấy dữ liệu mới nhất từ database
+            latest_data = self.get_latest_sensor_data()
+            if latest_data is None:
+                QMessageBox.critical(self, self.get_translated_text('error'),
+                    "Không thể lấy dữ liệu từ database.")
+                return
             
-            # Chuẩn hóa dữ liệu
-            scaled_features = scaler.transform(features)
+            # Xử lý dữ liệu mới nhất
+            processed_data = {
+                'temp': float(latest_data.get('temperature', 0)),
+                'humidity': float(latest_data.get('humidity', 0)),
+                'cloud': float(latest_data.get('light', 0)) / 10
+            }
             
-            # Lấy 3 ngày cuối cùng cho input
-            X_input = scaled_features[-3:]
-            X_input = X_input.reshape((1, 3, 6))
-            
-            # Dự đoán
-            predictions = model.predict(X_input)[0]
-            
-            # Cập nhật UI với kết quả dự đoán
-            self.updateWeatherUI(predictions, features)
-            
-        except pd.errors.EmptyDataError:
-            QMessageBox.critical(self, self.get_translated_text('error'),
-                "File dữ liệu thời tiết trống hoặc không đúng định dạng.")
-        except Exception as e:
-            QMessageBox.critical(self, self.get_translated_text('error'),
-                f"{self.get_translated_text('weather_error')}\n{str(e)}")
-
-    def preprocess_data(self, df):
-        # Chuyển đổi RainToday
-        df['RainToday'] = df['RainToday'].map({'Yes': 1, 'No': 0})
-        
-        # Xử lý missing values
-        df.dropna(inplace=True)
-        
-        # Chọn features
-        features = ['MinTemp', 'MaxTemp', 'Humidity', 'Cloud', 'Temp', 'RainToday']
-        
-        return df[features]
-
-    def updateWeatherUI(self, predictions, features):
-        try:
             # Tạo widget chính chứa tất cả nội dung
             main_container = QWidget()
             main_layout = QVBoxLayout(main_container)
@@ -867,47 +1100,60 @@ class WeatherApp(QMainWindow):
             scroll_content = QWidget()
             scroll_layout = QVBoxLayout(scroll_content)
             
-            # Lấy thông tin thời tiết cho hôm qua và hôm nay từ dataset
-            yesterday_data = features.iloc[-2]
-            today_data = features.iloc[-1]
+            # Widget cho hôm qua
+            if yesterday_data:
+                # Xác định trạng thái mưa dựa trên độ ẩm và cloud
+                is_rainy = yesterday_data['humidity'] > 85 and yesterday_data['cloud'] > 80
+                yesterday_widget = self.createWeatherWidget(
+                    self.get_translated_text('yesterday'),
+                    self.get_translated_text('rainy' if is_rainy else 'sunny'),
+                    yesterday_data,
+                    None,
+                    show_details=True
+                )
+                scroll_layout.addWidget(yesterday_widget)
             
-            # Widget cho hôm qua - chỉ hiển thị trạng thái thời tiết
-            yesterday_widget = self.createWeatherWidget(
-                self.get_translated_text('yesterday'), 
-                self.get_translated_text('sunny') if yesterday_data['RainToday'] == 0 
-                else self.get_translated_text('rainy'),
-                None,  # Không truyền data để không hiển thị chỉ số
-                None,  # Không hiển thị xác suất mưa
-                show_details=False  # Không hiển thị chi tiết
-            )
-            
-            # Widget cho hôm nay - hiển thị đầy đủ thông tin
+            # Widget cho hôm nay
+            # Xác định trạng thái mưa dựa trên độ ẩm và cloud
+            is_rainy = processed_data['humidity'] > 85 and processed_data['cloud'] > 80
             today_widget = self.createWeatherWidget(
                 self.get_translated_text('today'),
-                self.get_translated_text('rainy') if today_data['RainToday'] == 1 
-                else self.get_translated_text('sunny'),
-                today_data,
-                None,  # Không hiển thị xác suất mưa cho hôm nay
-                show_details=True  # Hiển thị đầy đủ chi tiết
+                self.get_translated_text('rainy' if is_rainy else 'sunny'),
+                processed_data,
+                None,
+                show_details=True
             )
-            
-            # Thêm widget hôm qua và hôm nay
-            scroll_layout.addWidget(yesterday_widget)
             scroll_layout.addWidget(today_widget)
             
-            # Thêm dự báo cho 3 ngày tiếp theo - chỉ hiển thị dự đoán và xác suất
-            for i, day in enumerate(predictions):
-                prob_rain = day[1] * 100
-                will_rain = self.get_translated_text('rainy') if np.argmax(day) == 1 else self.get_translated_text('sunny')
+            # Dự đoán cho 3 ngày tiếp theo
+            current_day = datetime.now().weekday()
+            days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+            
+            # Chuẩn bị dữ liệu cho dự đoán
+            features = self.preprocess_data(pd.DataFrame([processed_data]))
+            if features is not None:
+                scaled_features = self.scaler.transform(features)
+                X_input = np.repeat(scaled_features, 3, axis=0)
+                X_input = X_input.reshape((1, 3, 5))
                 
-                future_widget = self.createWeatherWidget(
-                    f"{i+1} {self.get_translated_text('next_day')}",
-                    will_rain,
-                    None,  # Không truyền data vì không hiển thị chỉ số
-                    prob_rain,  # Chỉ hiển thị xác suất mưa
-                    show_details=False  # Không hiển thị chi tiết
-                )
-                scroll_layout.addWidget(future_widget)
+                # Dự đoán
+                predictions = self.model.predict(X_input)[0]
+                
+                # Thêm widget cho 3 ngày tiếp theo
+                for i in range(3):
+                    next_day = (current_day + i + 1) % 7
+                    day_name = self.get_translated_text(days[next_day])
+                    prob_rain = predictions[i][1] * 100
+                    will_rain = np.argmax(predictions[i]) == 1
+                    
+                    future_widget = self.createWeatherWidget(
+                        day_name,
+                        self.get_translated_text('rainy' if will_rain else 'sunny'),
+                        None,
+                        prob_rain,
+                        show_details=False
+                    )
+                    scroll_layout.addWidget(future_widget)
             
             # Thêm spacing ở cuối
             scroll_layout.addStretch()
@@ -920,63 +1166,7 @@ class WeatherApp(QMainWindow):
             main_layout.addWidget(weather_container)
             
             # Thêm thanh điều hướng
-            nav_bar = QWidget()
-            nav_layout = QHBoxLayout(nav_bar)
-            nav_layout.setSpacing(10)
-            
-            nav_buttons = [
-                ("🏠", self.get_translated_text('home')),
-                ("🌤", self.get_translated_text('weather')),
-                ("💧", self.get_translated_text('watering')),
-                ("⚙️", self.get_translated_text('settings'))
-            ]
-            
-            self.button_group = QButtonGroup(self)
-            self.button_group.setExclusive(True)
-            
-            for icon, tooltip in nav_buttons:
-                btn = QPushButton(icon)
-                btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                btn.setCheckable(True)
-                btn.setToolTip(tooltip)
-                nav_layout.addWidget(btn)
-                self.button_group.addButton(btn)
-            
-            # Set style cho thanh điều hướng
-            nav_bar.setStyleSheet("""
-                QWidget {
-                    background-color: white;
-                    border-radius: 15px;
-                    padding: 10px;
-                }
-                QPushButton {
-                    border: none;
-                    border-radius: 10px;
-                    padding: 15px;
-                    font-size: 20px;
-                    background-color: #f0f0f0;
-                    min-width: 60px;
-                }
-                QPushButton:hover {
-                    background-color: #e0e0e0;
-                }
-                QPushButton:checked {
-                    background-color: #4a90e2;
-                    color: white;
-                }
-            """)
-            
-            # Kết nối sự kiện cho các nút
-            self.button_group.buttons()[0].clicked.connect(lambda: self.showMainPage(self.current_user))
-            self.button_group.buttons()[1].clicked.connect(self.showWeatherDetails)
-            self.button_group.buttons()[2].clicked.connect(self.showWateringOptions)
-            self.button_group.buttons()[3].clicked.connect(lambda: self.showSettingsPage(self.current_user))
-            
-            # Set nút thời tiết là active
-            self.button_group.buttons()[1].setChecked(True)
-            
-            # Thêm thanh điều hướng vào main layout
-            main_layout.addWidget(nav_bar)
+            self.addNavigationBar(main_layout, "weather")
             
             # Xóa widget cũ nếu có
             if self.current_page:
@@ -985,10 +1175,17 @@ class WeatherApp(QMainWindow):
             # Đặt widget mới làm central widget
             self.setCentralWidget(main_container)
             self.current_page = main_container
-
+            
+            # Cập nhật trạng thái button trong navigation bar
+            if hasattr(self, 'button_group'):
+                for button in self.button_group.buttons():
+                    if button.toolTip() == self.get_translated_text('weather'):
+                        button.setChecked(True)
+                        break
+            
         except Exception as e:
-            print(f"Lỗi khi cập nhật giao diện: {str(e)}")
-            raise Exception(f"Không thể cập nhật giao diện thời tiết: {str(e)}")
+            QMessageBox.critical(self, self.get_translated_text('error'),
+                f"{self.get_translated_text('weather_error')}\n{str(e)}")
 
     def createWeatherWidget(self, title, weather_status, data=None, rain_prob=None, show_details=True):
         widget = QWidget()
@@ -1022,9 +1219,9 @@ class WeatherApp(QMainWindow):
             
             # Định nghĩa các thông số cần hiển thị
             params = [
-                ("🌡️", self.get_translated_text('temperature'), f"{data.get('Temp', 0):.1f}°C"),
-                ("💧", self.get_translated_text('humidity'), f"{data.get('Humidity', 0):.1f}%"),
-                ("☁️", self.get_translated_text('cloud'), f"{data.get('Cloud', 0):.1f}%")
+                ("🌡️", self.get_translated_text('temperature'), f"{data.get('temp', 0):.1f}°C"),
+                ("💧", self.get_translated_text('humidity'), f"{data.get('humidity', 0):.1f}%"),
+                ("☁️", self.get_translated_text('cloud'), f"{data.get('cloud', 0):.1f}%")
             ]
             
             # Thêm các thông số vào grid
@@ -1043,19 +1240,15 @@ class WeatherApp(QMainWindow):
             
             layout.addWidget(params_widget)
         
-        # Thêm xác suất mưa nếu có
         if rain_prob is not None:
             rain_prob_widget = QWidget()
             rain_prob_layout = QHBoxLayout(rain_prob_widget)
-            
-            rain_prob_label = QLabel(f"🌧️ {self.get_translated_text('rain_prob')}")
-            rain_prob_label.setStyleSheet("font-size: 14px; color: #666;")
+            rain_prob_text_label = QLabel(f"🌧️ {self.get_translated_text('rain_prob')}")
+            rain_prob_text_label.setStyleSheet("font-size: 14px; color: #666;")
+            rain_prob_layout.addWidget(rain_prob_text_label)
+            rain_prob_label = QLabel(f"{rain_prob:.1f}%")
+            rain_prob_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
             rain_prob_layout.addWidget(rain_prob_label)
-            
-            rain_prob_value = QLabel(f"{rain_prob:.1f}%")
-            rain_prob_value.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
-            rain_prob_layout.addWidget(rain_prob_value)
-            
             layout.addWidget(rain_prob_widget)
         
         # Style cho widget
@@ -1247,6 +1440,14 @@ class WeatherApp(QMainWindow):
         self.setCentralWidget(watering_widget)
         self.current_page = watering_widget
 
+        if hasattr(self, 'weather_timer') and self.weather_timer.isActive():
+            self.weather_timer.stop()
+        if hasattr(self, 'weather_timer'):
+            self.weather_timer.timeout.disconnect()
+        self.weather_timer = QTimer(self)
+        self.weather_timer.timeout.connect(self.update_weather_params)
+        self.weather_timer.start(2000)  # cập nhật mỗi 2 giây
+
     def showManualWatering(self):
         if self.current_page:
             self.current_page.deleteLater()
@@ -1254,6 +1455,13 @@ class WeatherApp(QMainWindow):
         manual_widget = QWidget()
         layout = QVBoxLayout(manual_widget)
         layout.setContentsMargins(20, 20, 20, 20)
+
+        # Nút quay lại ở góc trái
+        back_btn = self.create_back_button(self.showWateringOptions)
+        back_layout = QHBoxLayout()
+        back_layout.addWidget(back_btn, alignment=Qt.AlignLeft)
+        back_layout.addStretch()
+        layout.addLayout(back_layout)
 
         # Tiêu đề
         title = QLabel(self.get_translated_text('manual_watering'))
@@ -1303,7 +1511,7 @@ class WeatherApp(QMainWindow):
                 QPushButton {
                     font-size: 20px;
                     padding: 20px;
-                    min-width: 100px;
+                    min-width: 200px;
                     background-color: #4a90e2;
                     color: white;
                     border-radius: 15px;
@@ -1317,80 +1525,14 @@ class WeatherApp(QMainWindow):
         buttons_layout.addWidget(off_btn)
         layout.addWidget(buttons_widget)
 
-        # Nút quay lại
-        back_btn = QPushButton(f"↩️ {self.get_translated_text('back')}")
-        back_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 16px;
-                padding: 10px;
-                background-color: #f0f0f0;
-                border-radius: 10px;
-                margin-top: 20px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-        """)
-        layout.addWidget(back_btn)
-
         # Kết nối sự kiện
         on_btn.clicked.connect(self.turn_on_water)
         off_btn.clicked.connect(self.turn_off_water)
-        back_btn.clicked.connect(self.showWateringOptions)
 
         layout.addStretch()
 
-        # Navigation bar
-        nav_bar = QWidget()
-        nav_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        nav_layout = QHBoxLayout(nav_bar)
-        nav_layout.setSpacing(10)
-
-        nav_buttons = [
-            ("🏠", self.get_translated_text('home'), lambda: self.showMainPage(self.current_user)),
-            ("🌤", self.get_translated_text('weather'), self.showWeatherDetails),
-            ("💧", self.get_translated_text('watering'), self.showWateringOptions),
-            ("⚙️", self.get_translated_text('settings'), lambda: self.showSettingsPage(self.current_user))
-        ]
-
-        self.button_group = QButtonGroup(self)
-        self.button_group.setExclusive(True)
-
-        for icon, tooltip, callback in nav_buttons:
-            btn = QPushButton(icon)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.setCheckable(True)
-            btn.setToolTip(tooltip)
-            if tooltip == self.get_translated_text('watering'):
-                btn.setChecked(True)
-            btn.clicked.connect(callback)
-            nav_layout.addWidget(btn)
-            self.button_group.addButton(btn)
-
-        nav_bar.setStyleSheet("""
-            QWidget {
-                background-color: white;
-                border-radius: 15px;
-                padding: 10px;
-            }
-            QPushButton {
-                border: none;
-                border-radius: 10px;
-                padding: 15px;
-                font-size: 20px;
-                background-color: #f0f0f0;
-                min-width: 60px;
-            }
-            QPushButton:hover {
-                background-color: #e0e0e0;
-            }
-            QPushButton:checked {
-                background-color: #4a90e2;
-                color: white;
-            }
-        """)
-
-        layout.addWidget(nav_bar)
+        # Thêm navigation bar
+        self.addNavigationBar(layout, self.get_translated_text('watering'))
 
         self.setCentralWidget(manual_widget)
         self.current_page = manual_widget
@@ -1405,19 +1547,12 @@ class WeatherApp(QMainWindow):
             layout.setContentsMargins(30, 30, 30, 30)
             layout.setSpacing(25)
 
-            # Scroll Area
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setStyleSheet("""
-                QScrollArea {
-                    border: none;
-                    background-color: transparent;
-                }
-            """)
-
-            content_widget = QWidget()
-            content_layout = QVBoxLayout(content_widget)
-            content_layout.setSpacing(25)
+            # Nút quay lại ở góc trái
+            back_btn = self.create_back_button(self.showWateringOptions)
+            back_layout = QHBoxLayout()
+            back_layout.addWidget(back_btn, alignment=Qt.AlignLeft)
+            back_layout.addStretch()
+            layout.addLayout(back_layout)
 
             # Tiêu đề
             title = QLabel(self.get_translated_text('auto_watering_title'))
@@ -1430,7 +1565,7 @@ class WeatherApp(QMainWindow):
                 border-radius: 15px;
                 border: 2px solid #4CAF50;
             """)
-            content_layout.addWidget(title, alignment=Qt.AlignCenter)
+            layout.addWidget(title, alignment=Qt.AlignCenter)
 
             # Trạng thái
             status_widget = QWidget()
@@ -1454,7 +1589,7 @@ class WeatherApp(QMainWindow):
             
             status_layout.addWidget(self.auto_status_icon, alignment=Qt.AlignRight)
             status_layout.addWidget(self.auto_status_text, alignment=Qt.AlignLeft)
-            content_layout.addWidget(status_widget)
+            layout.addWidget(status_widget)
 
             # Cài đặt
             settings_group = QGroupBox(self.get_translated_text('auto_watering_settings'))
@@ -1539,7 +1674,7 @@ class WeatherApp(QMainWindow):
             settings_layout.addRow(cycle_label, self.cycle_combo)
             settings_layout.addRow(duration_label, self.duration_spin)
 
-            content_layout.addWidget(settings_group)
+            layout.addWidget(settings_group)
 
             # Thông tin cài đặt
             self.settings_info = QLabel()
@@ -1556,29 +1691,12 @@ class WeatherApp(QMainWindow):
                 }
             """)
             self.settings_info.hide()
-            content_layout.addWidget(self.settings_info)
+            layout.addWidget(self.settings_info)
 
             # Nút điều khiển
             buttons_widget = QWidget()
             buttons_layout = QHBoxLayout(buttons_widget)
             buttons_layout.setSpacing(20)
-
-            # Nút trở về
-            back_btn = QPushButton(self.get_translated_text('back_btn'))
-            back_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #757575;
-                    color: white;
-                    padding: 15px 30px;
-                    border-radius: 12px;
-                    font-size: 24px;
-                    min-width: 150px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #616161;
-                }
-            """)
 
             enable_btn = QPushButton(self.get_translated_text('activate_btn'))
             disable_btn = QPushButton(self.get_translated_text('deactivate_btn'))
@@ -1601,63 +1719,19 @@ class WeatherApp(QMainWindow):
             enable_btn.setStyleSheet(button_style.format("#4CAF50", "#45a049"))
             disable_btn.setStyleSheet(button_style.format("#f44336", "#da190b"))
 
-            buttons_layout.addWidget(back_btn)
             buttons_layout.addWidget(enable_btn)
             buttons_layout.addWidget(disable_btn)
-            content_layout.addWidget(buttons_widget)
-
-            # Thêm widget content vào scroll area
-            scroll.setWidget(content_widget)
-            layout.addWidget(scroll)
+            layout.addWidget(buttons_widget)
 
             # Kết nối sự kiện
-            back_btn.clicked.connect(self.showWateringOptions)
             enable_btn.clicked.connect(self.enable_auto_watering)
             disable_btn.clicked.connect(self.disable_auto_watering)
 
             # Thêm navigation bar
             self.addNavigationBar(layout, self.get_translated_text('watering'))
 
-            # Đặt kích thước tối thiểu cho widget
-            auto_widget.setMinimumSize(800, 1000)
-            
             self.setCentralWidget(auto_widget)
             self.current_page = auto_widget
-
-            # Cập nhật trạng thái dựa trên biến đã lưu
-            if self.auto_watering_on and self.auto_watering_settings:
-                self.auto_status_icon.setText("🟢")
-                self.auto_status_text.setText(self.get_translated_text('auto_system_on'))
-                self.auto_status_text.setStyleSheet("""
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: #4CAF50;
-                    padding: 20px;
-                    background-color: #f8f8f8;
-                    border-radius: 15px;
-                """)
-                
-                # Khôi phục các cài đặt
-                self.start_time.setTime(QTime.fromString(self.auto_watering_settings['start_time'], 'HH:mm'))
-                self.end_time.setTime(QTime.fromString(self.auto_watering_settings['end_time'], 'HH:mm'))
-                
-                # Tìm và đặt chu kỳ tưới phù hợp
-                current_cycle = self.auto_watering_settings['cycle']
-                for i in range(self.cycle_combo.count()):
-                    if self.cycle_combo.itemText(i) == current_cycle:
-                        self.cycle_combo.setCurrentIndex(i)
-                        break
-                
-                self.duration_spin.setValue(self.auto_watering_settings['duration'])
-                
-                # Hiển thị thông tin cài đặt
-                settings_text = f"""
-{self.get_translated_text('operating_time')} {self.auto_watering_settings['start_time']} - {self.auto_watering_settings['end_time']}
-{self.get_translated_text('watering_cycle')} {current_cycle}
-{self.get_translated_text('watering_duration')} {self.auto_watering_settings['duration']} {self.get_translated_text('minutes')}
-                """
-                self.settings_info.setText(settings_text)
-                self.settings_info.show()
 
         except Exception as e:
             print(f"Lỗi trong showAutoWatering: {str(e)}")
@@ -1683,7 +1757,7 @@ class WeatherApp(QMainWindow):
             ("👤", self.get_translated_text('personal_info'), lambda: self.showUserInfoDialog(username)),
             ("🔔", self.get_translated_text('notifications'), lambda: QMessageBox.information(self, self.get_translated_text('notifications'), "Tính năng đang phát triển")),
             ("🌍", self.get_translated_text('language'), lambda: self.showLanguagePage()),
-            ("🔌", self.get_translated_text('pin'), lambda: QMessageBox.information(self, self.get_translated_text('pin'), "Tính năng đang phát triển")),
+            ("🔌", self.get_translated_text('pin'), lambda: self.showPinConfigPage()),
             ("❓", self.get_translated_text('help'), lambda: QMessageBox.information(self, self.get_translated_text('help'), "Tính năng đang phát triển")),
         ]
 
@@ -1771,6 +1845,14 @@ class WeatherApp(QMainWindow):
 
         self.setCentralWidget(settings_widget)
         self.current_page = settings_widget
+
+        if hasattr(self, 'weather_timer') and self.weather_timer.isActive():
+            self.weather_timer.stop()
+        if hasattr(self, 'weather_timer'):
+            self.weather_timer.timeout.disconnect()
+        self.weather_timer = QTimer(self)
+        self.weather_timer.timeout.connect(self.update_weather_params)
+        self.weather_timer.start(2000)  # cập nhật mỗi 2 giây
 
     def showUserInfoDialog(self, username):
         dialog = QDialog(self)
@@ -2092,23 +2174,11 @@ class WeatherApp(QMainWindow):
         content_layout.addStretch()
 
         # Nút quay lại
-        back_btn = QPushButton("↩️ " + self.get_translated_text('back'))
-        back_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #757575;
-                color: white;
-                padding: 15px 30px;
-                border-radius: 12px;
-                font-size: 18px;
-                min-width: 150px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #616161;
-            }
-        """)
-        back_btn.clicked.connect(lambda: self.showSettingsPage(self.current_user))
-        content_layout.addWidget(back_btn, alignment=Qt.AlignCenter)
+        back_btn = self.create_back_button(lambda: self.showSettingsPage(self.current_user))
+        back_layout = QHBoxLayout()
+        back_layout.addWidget(back_btn, alignment=Qt.AlignLeft)
+        back_layout.addStretch()
+        content_layout.insertLayout(0, back_layout)
 
         # Thêm content widget vào main layout
         main_layout.addWidget(content_widget)
@@ -2280,13 +2350,214 @@ class WeatherApp(QMainWindow):
         return self.translations[lang].get(key, key)
 
     def logout(self):
+        if hasattr(self, 'serial_process') and self.serial_process is not None:
+            self.serial_process.terminate()
+            self.serial_process = None
         # Dừng timer trước khi logout
-        if self.timer:
-            self.timer.stop()
-            self.timer.deleteLater()
-            self.timer = None
+        if hasattr(self, 'weather_timer') and self.weather_timer.isActive():
+            self.weather_timer.stop()
         self.current_user = None  # Reset current_user khi logout
         self.showLoginPage()
+
+    def showPinConfigPage(self):
+        if self.current_page:
+            self.current_page.deleteLater()
+
+        pin_widget = QWidget()
+        layout = QVBoxLayout(pin_widget)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(25)
+
+        # Nút quay lại ở góc trái
+        back_btn = self.create_back_button(lambda: self.showSettingsPage(self.current_user))
+        back_layout = QHBoxLayout()
+        back_layout.addWidget(back_btn, alignment=Qt.AlignLeft)
+        back_layout.addStretch()
+        layout.addLayout(back_layout)
+
+        # Đọc cấu hình đã lưu (nếu có)
+        pin_config = {"sensor": "16", "motor": "6"}
+        try:
+            with open("pin_config.json", "r", encoding="utf-8") as f:
+                pin_config = json.load(f)
+        except Exception:
+            pass
+
+        # Tiêu đề
+        title = QLabel("<b>Gỡ lỗi</b>")
+        title.setStyleSheet("font-size: 28px; font-weight: bold; text-align: center;")
+        layout.addWidget(title, alignment=Qt.AlignCenter)
+
+        # Cảm biến nhiệt độ, độ ẩm
+        sensor_groupbox = QGroupBox("Cảm biến nhiệt độ, độ ẩm:")
+        sensor_layout = QHBoxLayout(sensor_groupbox)
+        self.sensor_btn_group = QButtonGroup(pin_widget)
+        for i, pin in enumerate(["16", "10", "9"]):
+            btn = QRadioButton(pin)
+            btn.setStyleSheet("font-size: 18px;")
+            self.sensor_btn_group.addButton(btn, i)
+            sensor_layout.addWidget(btn)
+            if pin_config.get("sensor") == pin:
+                btn.setChecked(True)
+        layout.addWidget(sensor_groupbox)
+
+        # Mô tơ
+        motor_groupbox = QGroupBox("Mô tơ:")
+        motor_layout = QHBoxLayout(motor_groupbox)
+        self.motor_btn_group = QButtonGroup(pin_widget)
+        for i, pin in enumerate(["6", "41"]):
+            btn = QRadioButton(pin)
+            btn.setStyleSheet("font-size: 18px;")
+            self.motor_btn_group.addButton(btn, i)
+            motor_layout.addWidget(btn)
+            if pin_config.get("motor") == pin:
+                btn.setChecked(True)
+        layout.addWidget(motor_groupbox)
+
+        # Sự kiện lưu khi đổi lựa chọn
+        def save_pin_config():
+            sensor_pin = self.sensor_btn_group.checkedButton().text()
+            motor_pin = self.motor_btn_group.checkedButton().text()
+            with open("pin_config.json", "w", encoding="utf-8") as f:
+                json.dump({"sensor": sensor_pin, "motor": motor_pin}, f)
+        self.sensor_btn_group.buttonClicked.connect(lambda _: save_pin_config())
+        self.motor_btn_group.buttonClicked.connect(lambda _: save_pin_config())
+
+        layout.addStretch()
+
+        # Navigation bar
+        nav_bar = QWidget()
+        nav_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        nav_layout = QHBoxLayout(nav_bar)
+        nav_layout.setSpacing(10)
+        nav_buttons = [
+            ("🏠", self.get_translated_text('home'), lambda: self.showMainPage(self.current_user)),
+            ("🌤", self.get_translated_text('weather'), self.showWeatherDetails),
+            ("💧", self.get_translated_text('watering'), self.showWateringOptions),
+            ("⚙️", self.get_translated_text('settings'), lambda: self.showSettingsPage(self.current_user))
+        ]
+        self.button_group = QButtonGroup(self)
+        self.button_group.setExclusive(True)
+        for icon, tooltip, callback in nav_buttons:
+            btn = QPushButton(icon)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setCheckable(True)
+            btn.setToolTip(tooltip)
+            if tooltip == self.get_translated_text('settings'):
+                btn.setChecked(True)
+            btn.clicked.connect(callback)
+            nav_layout.addWidget(btn)
+            self.button_group.addButton(btn)
+        nav_bar.setStyleSheet("""
+            QWidget {
+                background-color: white;
+                border-radius: 15px;
+                padding: 10px;
+            }
+            QPushButton {
+                border: none;
+                border-radius: 10px;
+                padding: 15px;
+                font-size: 20px;
+                background-color: #f0f0f0;
+                min-width: 60px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+            QPushButton:checked {
+                background-color: #4a90e2;
+                color: white;
+            }
+        """)
+        layout.addWidget(nav_bar)
+
+        self.setCentralWidget(pin_widget)
+        self.current_page = pin_widget
+
+    # --- Nút quay lại style dùng chung ---
+    def create_back_button(self, callback):
+        btn = QPushButton("<")
+        btn.setFixedSize(40, 40)
+        btn.setStyleSheet("""
+            QPushButton {
+                font-size: 22px;
+                font-weight: bold;
+                
+                color: black;
+                border: none;
+                border-radius: 20px;
+                margin: 0 0 10px 0;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+        """)
+        btn.clicked.connect(callback)
+        return btn
+
+    def start_serial_reader(self):
+        """Khởi động serial_reader.py như một tiến trình nền"""
+        try:
+            self.serial_process = subprocess.Popen(
+                [sys.executable, "serial_reader.py"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            print("Đã khởi động serial_reader.py")
+        except Exception as e:
+            print(f"Lỗi khi khởi động serial_reader.py: {e}")
+
+    def update_weather_prediction(self):
+        try:
+            if self.model is None or self.scaler is None:
+                return
+                
+            df = self.get_weather_data_from_db()
+            if df is None:
+                return
+                
+            features = self.preprocess_data(df)
+            if features is None:
+                return
+                
+            scaled_features = self.scaler.transform(features)
+            
+            # Tạo input cho model với 3 bản ghi giống nhau
+            X_input = np.repeat(scaled_features, 3, axis=0)
+            X_input = X_input.reshape((1, 3, 5))  # Reshape thành (1,3,5) để phù hợp với model
+            
+            predictions = self.model.predict(X_input)[0]
+            
+            # Kiểm tra xem trang thời tiết có đang hiển thị không
+            if not hasattr(self, 'current_page') or self.current_page is None:
+                return
+                
+            # Tìm các widget thời tiết trong trang hiện tại
+            weather_widgets = self.current_page.findChildren(QWidget, "weather_widget")
+            if not weather_widgets:
+                return
+                
+            # Cập nhật dự báo cho 3 ngày tiếp theo
+            for i, widget in enumerate(weather_widgets[2:5]):
+                try:
+                    if i < len(predictions):
+                        prob_rain = predictions[i][1] * 100
+                        will_rain = self.get_translated_text('rainy') if np.argmax(predictions[i]) == 1 else self.get_translated_text('sunny')
+                        
+                        # Cập nhật trạng thái thời tiết
+                        status_label = widget.findChild(QLabel, "", Qt.FindChildrenRecursively)
+                        if status_label:
+                            status_label.setText(will_rain)
+                            
+                        # Cập nhật xác suất mưa
+                        rain_prob_label = widget.findChild(QLabel, "", Qt.FindChildrenRecursively)
+                        if rain_prob_label:
+                            rain_prob_label.setText(f"{prob_rain:.1f}%")
+                except Exception:
+                    continue
+                    
+        except Exception as e:
+            print(f'Lỗi cập nhật dự báo thời tiết: {e}')
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
@@ -2309,4 +2580,3 @@ if __name__ == '__main__':
     weather_app = WeatherApp()
     weather_app.show()
     sys.exit(app.exec_())
-
