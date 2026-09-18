@@ -83,3 +83,18 @@ Local credentials and user-generated account files should **not** be committed t
 This repository is preserved as a portfolio example of integrating embedded devices, sensor data, a desktop UI, a relational database workflow, and a small machine-learning component in one system.
 
 It is an academic prototype rather than a production authentication or deployment reference.
+
+
+## Local database configuration
+
+Database credentials are read from environment variables instead of source code:
+
+```text
+SMART_AGRI_DB_PASSWORD
+SMART_AGRI_DB_NAME
+SMART_AGRI_DB_USER
+SMART_AGRI_DB_HOST
+SMART_AGRI_DB_PORT
+```
+
+The password is intentionally not given a committed default. Use a local development credential and never commit real database secrets.
