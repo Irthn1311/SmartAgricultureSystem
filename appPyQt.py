@@ -18,13 +18,13 @@ from PyQt5.QtCore import Qt, QTimer, QDateTime, QLocale, QTime
 from PyQt5.QtGui import QIcon, QPixmap, QRegion
 import json
 
-# Cấu hình kết nối database
+# Database configuration comes from environment variables.
 DB_CONFIG = {
-    'dbname': 'smart_agriculture',
-    'user': 'postgres',
-    'password': '12345678',
-    'host': 'localhost',
-    'port': '5432'
+    'dbname': os.getenv('SMART_AGRI_DB_NAME', 'smart_agriculture'),
+    'user': os.getenv('SMART_AGRI_DB_USER', 'postgres'),
+    'password': os.getenv('SMART_AGRI_DB_PASSWORD', ''),
+    'host': os.getenv('SMART_AGRI_DB_HOST', 'localhost'),
+    'port': os.getenv('SMART_AGRI_DB_PORT', '5432')
 }
 
 class WeatherApp(QMainWindow):
