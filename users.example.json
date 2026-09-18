@@ -1,0 +1,7 @@
+{
+  "demo_user": {
+    "password": "change-me-for-local-demo",
+    "email": "demo@example.com",
+    "image": ""
+  }
+}
